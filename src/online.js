@@ -26,6 +26,12 @@ const DefaultRelay = "wss://ourfirstgame.doha-mustafa.workers.dev";
 const PingMs = 20000;
 const OpenTimeoutMs = 8000;
 const WakeAfterHiddenMs = 3000;
+// Both players send a tiny "ping" through the relay. If nothing from the friend
+// arrives for a while while we think we are connected, the socket is probably
+// half-dead (common on phones) and we replace it.
+const FriendPingMs = 6000;
+const SilentAfterMs = 25000;
+const MaxSilentAfterMs = 120000;
 
 function relayBase() {
   try {
@@ -85,6 +91,8 @@ export function createOnlineSession({
   let everOpen = false;
   let hadFriend = false;
   let hiddenAt = 0;
+  let lastInbound = Date.now();
+  let silentRounds = 0;
   let state = "";
   let current = roomId;
   let key = loadKey(role, current);
@@ -120,6 +128,7 @@ export function createOnlineSession({
   function friendIn() {
     hadFriend = true;
     tries = 0;
+    lastInbound = Date.now();
     status("connected");
     onOpen();
   }
@@ -154,12 +163,16 @@ export function createOnlineSession({
     if (!message || typeof message !== "object") {
       return;
     }
+    lastInbound = Date.now();
+    silentRounds = 0;
     if (state !== "connected") {
       // e.g. the host came back while we were waiting for it
       hadFriend = true;
       status("connected");
     }
-    onMessage(message);
+    if (message.type !== "ping") {
+      onMessage(message);
+    }
   }
 
   function connect() {
@@ -296,6 +309,23 @@ export function createOnlineSession({
   window.addEventListener("online", reconnectNow);
   window.addEventListener("pageshow", wake);
 
+  const friendPing = setInterval(() => {
+    if (destroyed || state !== "connected" || !ws || ws.readyState !== 1) {
+      return;
+    }
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      // the close handler will reconnect
+    }
+    const limit = Math.min(MaxSilentAfterMs, SilentAfterMs * 2 ** silentRounds);
+    if (Date.now() - lastInbound > limit) {
+      silentRounds += 1;
+      lastInbound = Date.now();
+      reconnectNow();
+    }
+  }, FriendPingMs);
+
   queueMicrotask(() => {
     if (!state) {
       status(role === "host" ? "waiting" : "connecting");
@@ -316,8 +346,13 @@ export function createOnlineSession({
         }
       }
     },
+    // Replace the socket with a fresh one; both sides re-sync on reopen.
+    reconnect() {
+      reconnectNow();
+    },
     destroy() {
       destroyed = true;
+      clearInterval(friendPing);
       stopTimers();
       clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", onVisibility);

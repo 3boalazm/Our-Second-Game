@@ -234,6 +234,14 @@ export function createApp(root) {
     persist();
   }
 
+  // After sending a move we expect any reply (ack) from the friend soon. If it
+  // never comes, our link is probably half-dead: re-open it and re-sync.
+  let ackTimer = null;
+  function expectAck() {
+    clearTimeout(ackTimer);
+    ackTimer = setTimeout(() => session?.reconnect(), 4000);
+  }
+
   function sendHello() {
     session?.send({ type: "hello", epoch, moves });
   }
@@ -257,6 +265,10 @@ export function createApp(root) {
   }
 
   function handleMessage(message) {
+    clearTimeout(ackTimer);
+    if (message.type === "ack") {
+      return;
+    }
     if (message.type === "hello") {
       if (
         !Number.isInteger(message.epoch) || !Array.isArray(message.moves) ||
@@ -272,6 +284,7 @@ export function createApp(root) {
         sendHello();
       }
     } else if (message.type === "move") {
+      session.send({ type: "ack", n: message.n });
       if (message.n === moves.length) {
         // Only accept a move when it is the opponent's turn.
         if (board.isPlayer1Turn() !== localIsPlayer1) {
@@ -475,6 +488,7 @@ export function createApp(root) {
         return;
       }
       session.send({ type: "move", edge, n: moves.length });
+      expectAck();
     }
     applyMove(edge);
   }
@@ -521,6 +535,7 @@ export function createApp(root) {
 
   function destroy() {
     closed = true;
+    clearTimeout(ackTimer);
     pendingRequest += 1;
     worker?.terminate();
     worker = null;
