@@ -11,16 +11,22 @@ export function readPlayerConfig() {
   };
 }
 
-// ?online=host      -> create a room and share the invite link
-// ?room=<room id>   -> join a friend's room
+// Room codes are 4 digits, like in "Our First Game".
+const RoomPattern = /^\d{4}$/;
+
+// ?online=host            -> create a new room and share the invite link
+// ?online=host&id=<room>  -> reopen your own room (the page adds this itself,
+//                            so reloading keeps the same invite link)
+// ?room=<room id>         -> join a friend's room
 export function readOnlineConfig() {
   const params = new URLSearchParams(window.location.search);
   const room = params.get("room");
-  if (room && /^[a-z0-9-]{4,40}$/i.test(room)) {
+  if (room && RoomPattern.test(room)) {
     return { role: "guest", room };
   }
   if (params.get("online") === "host") {
-    return { role: "host", room: null };
+    const id = params.get("id");
+    return { role: "host", room: id && RoomPattern.test(id) ? id : null };
   }
   return null;
 }

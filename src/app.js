@@ -2,7 +2,8 @@ import { BoardSize, readOnlineConfig, readPlayerConfig } from "./config";
 import { Board, Owner } from "./game/board";
 import { BoardTopology } from "./game/board-topology";
 import { PlayerType } from "./game/robots";
-import { createOnlineSession } from "./online";
+import { createOnlineSession, createRoomId } from "./online";
+import { loadGame, pruneGames, saveGame } from "./persist";
 
 const DefaultUnitSize = 8;
 
@@ -201,24 +202,120 @@ export function createApp(root) {
   const localIsPlayer1 = online?.role === "host";
   let netState = online ? "connecting" : "offline";
   let netDetail = "";
+  let roomId = online ? online.room ?? createRoomId() : null;
+  // The game is saved as a move list + restart counter ("epoch"), so it can be
+  // restored after a reload and re-synced with the friend after a reconnect.
+  let epoch = 0;
+  let moves = [];
+
+  function persist() {
+    if (online) {
+      saveGame(roomId, { epoch, moves });
+    }
+  }
+
+  function validEdge(edge) {
+    return Number.isInteger(edge) && edge >= 0 && edge < model.edgeCount;
+  }
+
+  function resetGame(nextEpoch, list) {
+    board.reset();
+    moves = [];
+    for (const edge of list) {
+      if (!board.gaming() || !validEdge(edge) || board.contains(edge)) {
+        break;
+      }
+      board.add(edge);
+      moves.push(edge);
+    }
+    epoch = nextEpoch;
+    resultDialog?.remove();
+    resultDialog = null;
+    persist();
+  }
+
+  function sendHello() {
+    session?.send({ type: "hello", epoch, moves });
+  }
+
+  // Decide who has the newer game after a (re)connect.
+  function compare(remote) {
+    if (remote.epoch !== epoch) {
+      return remote.epoch > epoch ? "adopt" : "reply";
+    }
+    const common = Math.min(remote.moves.length, moves.length);
+    for (let i = 0; i < common; i += 1) {
+      if (remote.moves[i] !== moves[i]) {
+        // Diverged (should not happen): the host's game wins.
+        return online.role === "guest" ? "adopt" : "reply";
+      }
+    }
+    if (remote.moves.length > moves.length) {
+      return "adopt";
+    }
+    return remote.moves.length < moves.length ? "reply" : "same";
+  }
+
+  function handleMessage(message) {
+    if (message.type === "hello") {
+      if (
+        !Number.isInteger(message.epoch) || !Array.isArray(message.moves) ||
+        message.moves.length > model.edgeCount || !message.moves.every(Number.isInteger)
+      ) {
+        return;
+      }
+      const result = compare(message);
+      if (result === "adopt") {
+        resetGame(message.epoch, message.moves);
+        render();
+      } else if (result === "reply") {
+        sendHello();
+      }
+    } else if (message.type === "move") {
+      if (message.n === moves.length) {
+        // Only accept a move when it is the opponent's turn.
+        if (board.isPlayer1Turn() !== localIsPlayer1) {
+          applyMove(message.edge);
+        }
+      } else if (message.n > moves.length) {
+        sendHello(); // we missed something: ask for a re-sync
+      }
+    } else if (message.type === "restart") {
+      if (Number.isInteger(message.epoch) && message.epoch > epoch) {
+        resetGame(message.epoch, []);
+        render();
+      }
+    }
+  }
+
+  if (online) {
+    pruneGames();
+    if (online.role === "host") {
+      // keep the invite link stable across reloads
+      window.history.replaceState(null, "", `?online=host&id=${roomId}`);
+    }
+    const saved = loadGame(roomId);
+    resetGame(saved.epoch, saved.moves);
+  }
+
   const session = online
     ? createOnlineSession({
         role: online.role,
-        room: online.room,
+        roomId,
         onStatus(state, detail) {
           netState = state;
           netDetail = detail;
           render();
         },
-        onMessage(message) {
-          if (message.type === "move") {
-            // Only accept a move when it is the opponent's turn.
-            if (board.isPlayer1Turn() !== localIsPlayer1) {
-              applyMove(message.edge);
-            }
-          } else if (message.type === "restart") {
-            restart(false);
-          }
+        onOpen: sendHello,
+        onMessage: handleMessage,
+        onRoomChange(next) {
+          roomId = next;
+          window.history.replaceState(null, "", `?online=host&id=${next}`);
+          const saved = loadGame(next);
+          resetGame(saved.epoch, saved.moves);
+          inviteInput.value = inviteUrl();
+          render();
         },
       })
     : null;
@@ -228,7 +325,7 @@ export function createApp(root) {
   }
 
   function inviteUrl() {
-    return `${window.location.origin}${window.location.pathname}?room=${session.roomId}`;
+    return `${window.location.origin}${window.location.pathname}?room=${roomId}`;
   }
 
   const bothHuman = player1Type === PlayerType.Human && player2Type === PlayerType.Human;
@@ -251,10 +348,13 @@ export function createApp(root) {
         return "Waiting for your friend to join...";
       }
       if (netState === "connecting") {
-        return "Connecting to your friend...";
+        return "Connecting...";
       }
-      if (netState === "disconnected") {
-        return "Your friend left the game.";
+      if (netState === "reconnecting") {
+        return "Connection lost. Reconnecting...";
+      }
+      if (netState === "away") {
+        return "Your friend left. Waiting for them to come back...";
       }
       if (netState === "error") {
         return netDetail || "Connection problem.";
@@ -285,7 +385,7 @@ export function createApp(root) {
     });
     hudStatus.textContent = statusText();
     hudStatus.dataset.state = online ? netState : "offline";
-    hudInvite.hidden = netState !== "waiting";
+    hudInvite.hidden = !(online?.role === "host" && (netState === "waiting" || netState === "away"));
   }
 
   if (session) {
@@ -359,6 +459,10 @@ export function createApp(root) {
       return;
     }
     board.add(edge);
+    if (online) {
+      moves.push(edge);
+      persist();
+    }
     render();
   }
 
@@ -370,7 +474,7 @@ export function createApp(root) {
       if (netState !== "connected" || !isLocalTurn() || !board.gaming() || board.contains(edge)) {
         return;
       }
-      session.send({ type: "move", edge });
+      session.send({ type: "move", edge, n: moves.length });
     }
     applyMove(edge);
   }
@@ -397,12 +501,17 @@ export function createApp(root) {
     if (closed) {
       return;
     }
-    if (online && notifyPeer) {
-      session.send({ type: "restart" });
+    if (online) {
+      resetGame(epoch + 1, []);
+      if (notifyPeer) {
+        session.send({ type: "restart", epoch });
+      }
     }
     pendingRequest += 1;
     worker?.terminate();
-    board.reset();
+    if (!online) {
+      board.reset();
+    }
     thinking = false;
     resultDialog?.remove();
     resultDialog = null;

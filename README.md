@@ -123,3 +123,9 @@ The board size is set by `BoardSize` in `src/config.js`. The compact typed-array
 ## License
 
 [MIT](LICENSE)
+
+## Online play
+
+Choose "Play with a friend online" on the start screen (or open `?online=host`). The page creates a 4 digit room and shows an invite link (`?room=1234`); your friend opens it and plays Red.
+
+Online games use the same room relay as "Our First Game" (a Cloudflare Worker, `wss://ourfirstgame.doha-mustafa.workers.dev`). The game is saved in each browser as a move list, and the connection re-opens by itself if a player leaves, reloads, or the phone goes to the background. When the link comes back both sides re-sync to the newest game, so nobody loses progress. For local relay testing add `?relay=ws://127.0.0.1:8787`.
