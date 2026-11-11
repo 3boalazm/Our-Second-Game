@@ -337,6 +337,10 @@ export function createOnlineSession({
     get roomId() {
       return current;
     },
+    // milliseconds since we last heard from the friend
+    msSinceFriend() {
+      return Date.now() - lastInbound;
+    },
     send(message) {
       if (ws && ws.readyState === 1) {
         try {

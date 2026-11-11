@@ -4,13 +4,14 @@
 const Prefix = "dnb-game-";
 const MaxAgeMs = 24 * 60 * 60 * 1000;
 
-export function loadGame(room) {
+export function loadGame(room, size) {
   try {
     const value = JSON.parse(localStorage.getItem(Prefix + room));
     if (
       value &&
       Number.isInteger(value.epoch) &&
       Array.isArray(value.moves) &&
+      value.size === size &&
       value.moves.every(Number.isInteger)
     ) {
       return { epoch: value.epoch, moves: value.moves };
@@ -25,7 +26,12 @@ export function saveGame(room, game) {
   try {
     localStorage.setItem(
       Prefix + room,
-      JSON.stringify({ epoch: game.epoch, moves: game.moves, t: Date.now() }),
+      JSON.stringify({
+        epoch: game.epoch,
+        moves: game.moves,
+        size: game.size,
+        t: Date.now(),
+      }),
     );
   } catch {
     // storage blocked: the game still works, it just can't be restored

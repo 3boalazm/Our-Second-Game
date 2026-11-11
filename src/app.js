@@ -1,4 +1,12 @@
-import { BoardSize, readOnlineConfig, readPlayerConfig } from "./config";
+import {
+  DefaultBoardSize,
+  MaxBoardSize,
+  MinBoardSize,
+  parseBoardSize,
+  readBoardSize,
+  readOnlineConfig,
+  readPlayerConfig,
+} from "./config";
 import { Board, Owner } from "./game/board";
 import { BoardTopology } from "./game/board-topology";
 import { PlayerType } from "./game/robots";
@@ -118,10 +126,22 @@ function createResultDialog(title, detail, onRestart) {
   return backdrop;
 }
 
+function readSavedSize() {
+  try {
+    return parseBoardSize(localStorage.getItem("dnb-size")) ?? DefaultBoardSize;
+  } catch {
+    return DefaultBoardSize;
+  }
+}
+
 function createMenu(root) {
   const base = window.location.pathname;
   const main = document.createElement("main");
   main.className = "menu-shell";
+  const sizes = [];
+  for (let size = MinBoardSize; size <= MaxBoardSize; size += 1) {
+    sizes.push(size);
+  }
   main.innerHTML = `
     <section class="menu-card">
       <div class="menu-logo" aria-hidden="true">
@@ -129,23 +149,55 @@ function createMenu(root) {
       </div>
       <h1>Dots &amp; Boxes</h1>
       <p class="menu-sub">Draw lines, close boxes, keep the turn.</p>
-      <a class="menu-button primary" href="${base}?online=host">
+      <div class="size-picker" role="radiogroup" aria-label="Board size">
+        <span class="size-label">Board size <small>(boxes)</small></span>
+        <div class="size-options">
+          ${sizes
+            .map(
+              (size) =>
+                `<button type="button" role="radio" data-size="${size}">${size} &times; ${size}</button>`,
+            )
+            .join("")}
+        </div>
+      </div>
+      <a class="menu-button primary" data-query="?online=host">
         <strong>Play with a friend online</strong>
         <span>Get an invite link and send it to anyone</span>
       </a>
-      <a class="menu-button" href="${base}?player1=human&amp;player2=robot">
+      <a class="menu-button" data-query="?player1=human&player2=robot">
         <strong>Play against the robot</strong>
         <span>You are Blue and move first</span>
       </a>
-      <a class="menu-button" href="${base}?player1=human&amp;player2=human">
+      <a class="menu-button" data-query="?player1=human&player2=human">
         <strong>Two players, one device</strong>
         <span>Take turns on the same screen</span>
       </a>
-      <a class="menu-button subtle" href="${base}?player1=robot&amp;player2=robot">
+      <a class="menu-button subtle" data-query="?player1=robot&player2=robot">
         <strong>Watch two robots play</strong>
       </a>
     </section>
   `;
+  const links = [...main.querySelectorAll("[data-query]")];
+  const buttons = [...main.querySelectorAll("[data-size]")];
+  function select(size) {
+    try {
+      localStorage.setItem("dnb-size", String(size));
+    } catch {
+      // storage blocked: the choice just is not remembered
+    }
+    buttons.forEach((button) => {
+      const active = Number(button.dataset.size) === size;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-checked", String(active));
+    });
+    links.forEach((link) => {
+      link.href = `${base}${link.dataset.query}&size=${size}`;
+    });
+  }
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => select(Number(button.dataset.size)));
+  });
+  select(readSavedSize());
   root.replaceChildren(main);
   return () => {};
 }
@@ -155,7 +207,8 @@ export function createApp(root) {
   if (!readOnlineConfig() && !params.has("player1") && !params.has("player2")) {
     return createMenu(root);
   }
-  const model = new BoardTopology(BoardSize);
+  const boardSize = readBoardSize();
+  const model = new BoardTopology(boardSize);
   const board = new Board(model);
   const online = readOnlineConfig();
   const { player1Type, player2Type } = online
@@ -167,7 +220,11 @@ export function createApp(root) {
   const hud = document.createElement("header");
   hud.className = "hud";
   hud.innerHTML = `
-    <a class="menu-link" data-role="menu">&larr; Menu</a>
+    <div class="hud-top">
+      <a class="menu-link" data-role="menu">&larr; Menu</a>
+      <span class="room-info"></span>
+      <button type="button" class="sync" data-role="sync" hidden>Sync</button>
+    </div>
     <div class="scoreboard">
       <div class="score-card blue" data-side="1">
         <span class="player-name"></span><span class="score">0</span>
@@ -186,6 +243,8 @@ export function createApp(root) {
   hud.querySelector('[data-role="menu"]').href = window.location.pathname;
   const hudCards = [...hud.querySelectorAll(".score-card")];
   const hudStatus = hud.querySelector(".status");
+  const roomInfo = hud.querySelector(".room-info");
+  const syncButton = hud.querySelector('[data-role="sync"]');
   const hudInvite = hud.querySelector(".invite");
   const inviteInput = hudInvite.querySelector("input");
   main.append(hud, boardView.element);
@@ -210,7 +269,7 @@ export function createApp(root) {
 
   function persist() {
     if (online) {
-      saveGame(roomId, { epoch, moves });
+      saveGame(roomId, { epoch, moves, size: boardSize });
     }
   }
 
@@ -237,13 +296,14 @@ export function createApp(root) {
   // After sending a move we expect any reply (ack) from the friend soon. If it
   // never comes, our link is probably half-dead: re-open it and re-sync.
   let ackTimer = null;
+  let infoTimer = null;
   function expectAck() {
     clearTimeout(ackTimer);
     ackTimer = setTimeout(() => session?.reconnect(), 4000);
   }
 
   function sendHello() {
-    session?.send({ type: "hello", epoch, moves });
+    session?.send({ type: "hello", size: boardSize, epoch, moves });
   }
 
   // Decide who has the newer game after a (re)connect.
@@ -276,6 +336,14 @@ export function createApp(root) {
       ) {
         return;
       }
+      if (
+        online.role === "guest" && parseBoardSize(message.size) &&
+        message.size !== boardSize
+      ) {
+        // The host chose another board size: reload with the same size.
+        window.location.replace(`?room=${roomId}&size=${message.size}`);
+        return;
+      }
       const result = compare(message);
       if (result === "adopt") {
         resetGame(message.epoch, message.moves);
@@ -305,9 +373,11 @@ export function createApp(root) {
     pruneGames();
     if (online.role === "host") {
       // keep the invite link stable across reloads
-      window.history.replaceState(null, "", `?online=host&id=${roomId}`);
+      window.history.replaceState(
+        null, "", `?online=host&id=${roomId}&size=${boardSize}`,
+      );
     }
-    const saved = loadGame(roomId);
+    const saved = loadGame(roomId, boardSize);
     resetGame(saved.epoch, saved.moves);
   }
 
@@ -324,8 +394,10 @@ export function createApp(root) {
         onMessage: handleMessage,
         onRoomChange(next) {
           roomId = next;
-          window.history.replaceState(null, "", `?online=host&id=${next}`);
-          const saved = loadGame(next);
+          window.history.replaceState(
+            null, "", `?online=host&id=${next}&size=${boardSize}`,
+          );
+          const saved = loadGame(next, boardSize);
           resetGame(saved.epoch, saved.moves);
           inviteInput.value = inviteUrl();
           render();
@@ -338,7 +410,7 @@ export function createApp(root) {
   }
 
   function inviteUrl() {
-    return `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+    return `${window.location.origin}${window.location.pathname}?room=${roomId}&size=${boardSize}`;
   }
 
   const bothHuman = player1Type === PlayerType.Human && player2Type === PlayerType.Human;
@@ -386,6 +458,18 @@ export function createApp(root) {
     return bothHuman ? `${board.isPlayer1Turn() ? "Blue" : "Red"}'s turn` : "Your turn";
   }
 
+  function renderRoomInfo() {
+    let text = `${boardSize} × ${boardSize}`;
+    if (online) {
+      text += ` · Room ${roomId} · ${moves.length} moves`;
+      if (netState === "connected" && session) {
+        const seconds = Math.round(session.msSinceFriend() / 1000);
+        text += ` · friend seen ${seconds}s ago`;
+      }
+    }
+    roomInfo.textContent = text;
+  }
+
   function renderHud() {
     const live = board.gaming() && (!online || netState === "connected");
     hudCards.forEach((card, index) => {
@@ -396,12 +480,22 @@ export function createApp(root) {
       );
       card.classList.toggle("active", live && board.isPlayer1Turn() === isPlayer1);
     });
+    renderRoomInfo();
     hudStatus.textContent = statusText();
     hudStatus.dataset.state = online ? netState : "offline";
     hudInvite.hidden = !(online?.role === "host" && (netState === "waiting" || netState === "away"));
   }
 
   if (session) {
+    syncButton.hidden = false;
+    syncButton.addEventListener("click", () => {
+      session.reconnect();
+      syncButton.textContent = "Syncing...";
+      setTimeout(() => {
+        syncButton.textContent = "Sync";
+      }, 1500);
+    });
+    infoTimer = setInterval(renderRoomInfo, 1000);
     inviteInput.value = online.role === "host" ? inviteUrl() : "";
     inviteInput.addEventListener("focus", () => inviteInput.select());
     const copyButton = hudInvite.querySelector('[data-role="copy"]');
@@ -439,6 +533,7 @@ export function createApp(root) {
       worker.postMessage({
         requestId: ++pendingRequest,
         board: board.toSnapshot(),
+        size: boardSize,
       });
     }
     boardView.render(
@@ -536,6 +631,7 @@ export function createApp(root) {
   function destroy() {
     closed = true;
     clearTimeout(ackTimer);
+    clearInterval(infoTimer);
     pendingRequest += 1;
     worker?.terminate();
     worker = null;

@@ -1,7 +1,24 @@
 import { parsePlayerType } from "./game/robots";
 
-// Supported range: 1-6 for the compact topology and move buffers.
-export const BoardSize = 6;
+// Board size = boxes per side (5 means 5 x 5 boxes). The compact topology and
+// move buffers support 1-6; 2-6 is offered in the UI.
+export const MinBoardSize = 2;
+export const MaxBoardSize = 6;
+export const DefaultBoardSize = 5;
+export const BoardSize = DefaultBoardSize;
+
+export function parseBoardSize(value) {
+  const size = Number(value);
+  return Number.isInteger(size) && size >= MinBoardSize && size <= MaxBoardSize
+    ? size
+    : null;
+}
+
+// ?size=4 -> 4 x 4 boxes
+export function readBoardSize() {
+  const params = new URLSearchParams(window.location.search);
+  return parseBoardSize(params.get("size")) ?? DefaultBoardSize;
+}
 
 export function readPlayerConfig() {
   const params = new URLSearchParams(window.location.search);

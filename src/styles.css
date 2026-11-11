@@ -97,6 +97,33 @@ input {
   gap: 10px;
 }
 
+.hud-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.room-info {
+  margin-left: auto;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sync[hidden] {
+  display: none;
+}
+
 .menu-link {
   align-self: flex-start;
   color: var(--text-soft);
@@ -477,6 +504,45 @@ input {
   margin: 0 0 8px;
   color: var(--text-soft);
   text-align: center;
+}
+
+.size-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.size-label {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.size-label small {
+  opacity: 0.8;
+}
+
+.size-options {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.size-options button {
+  padding: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.size-options button.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
 }
 
 .menu-button {
