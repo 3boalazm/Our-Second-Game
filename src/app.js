@@ -69,7 +69,13 @@ function createBoardView(model, onEdgeClick) {
     element,
     render(board, interactive, thinking, unitSize) {
       element.setAttribute("aria-busy", String(thinking));
+      element.dataset.turn = board.isPlayer1Turn() ? "1" : "2";
+      element.dataset.over = String(!board.gaming());
       element.style.setProperty(
+        "--preferred-size",
+        `${logicalWindowSize * unitSize}px`,
+      );
+      document.documentElement.style.setProperty(
         "--preferred-size",
         `${logicalWindowSize * unitSize}px`,
       );
@@ -90,47 +96,64 @@ function createBoardView(model, onEdgeClick) {
   };
 }
 
-function createResultDialog(board, onRestart, onClose) {
+function createResultDialog(title, detail, onRestart) {
   const backdrop = document.createElement("div");
   backdrop.className = "dialog-backdrop";
   backdrop.innerHTML = `
     <section class="result-dialog" role="dialog" aria-modal="true"
-      aria-labelledby="result-message">
-      <p id="result-message"></p>
+      aria-labelledby="result-title">
+      <h2 id="result-title"></h2>
+      <p id="result-detail"></p>
       <div class="dialog-actions">
-        <button type="button" data-action="restart">
-          <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24"
-            fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-            <path d="M3 3v5h5"/>
-          </svg>
-          Restart
-        </button>
-        <button type="button" data-action="close">
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24"
-            fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="m18 6-12 12M6 6l12 12"/>
-          </svg>
-          Close
-        </button>
+        <button type="button" class="primary" data-action="restart">Play again</button>
+        <a class="button" data-action="menu">Menu</a>
       </div>
     </section>
   `;
-  let message = "Draw!";
-  if (board.relativeScore > 0) {
-    message = `Blue Team Win! (Score ${board.player1Score()}:${board.player2Score()})`;
-  } else if (board.relativeScore < 0) {
-    message = `Red Team Win! (Score ${board.player1Score()}:${board.player2Score()})`;
-  }
-  backdrop.querySelector("#result-message").textContent = message;
+  backdrop.querySelector("#result-title").textContent = title;
+  backdrop.querySelector("#result-detail").textContent = detail;
+  backdrop.querySelector('[data-action="menu"]').href = window.location.pathname;
   backdrop.querySelector('[data-action="restart"]').addEventListener("click", onRestart);
-  backdrop.querySelector('[data-action="close"]').addEventListener("click", onClose);
   return backdrop;
 }
 
+function createMenu(root) {
+  const base = window.location.pathname;
+  const main = document.createElement("main");
+  main.className = "menu-shell";
+  main.innerHTML = `
+    <section class="menu-card">
+      <div class="menu-logo" aria-hidden="true">
+        <i></i><i></i><i></i><i></i>
+      </div>
+      <h1>Dots &amp; Boxes</h1>
+      <p class="menu-sub">Draw lines, close boxes, keep the turn.</p>
+      <a class="menu-button primary" href="${base}?online=host">
+        <strong>Play with a friend online</strong>
+        <span>Get an invite link and send it to anyone</span>
+      </a>
+      <a class="menu-button" href="${base}?player1=human&amp;player2=robot">
+        <strong>Play against the robot</strong>
+        <span>You are Blue and move first</span>
+      </a>
+      <a class="menu-button" href="${base}?player1=human&amp;player2=human">
+        <strong>Two players, one device</strong>
+        <span>Take turns on the same screen</span>
+      </a>
+      <a class="menu-button subtle" href="${base}?player1=robot&amp;player2=robot">
+        <strong>Watch two robots play</strong>
+      </a>
+    </section>
+  `;
+  root.replaceChildren(main);
+  return () => {};
+}
+
 export function createApp(root) {
+  const params = new URLSearchParams(window.location.search);
+  if (!readOnlineConfig() && !params.has("player1") && !params.has("player2")) {
+    return createMenu(root);
+  }
   const model = new BoardTopology(BoardSize);
   const board = new Board(model);
   const online = readOnlineConfig();
@@ -140,9 +163,31 @@ export function createApp(root) {
   const main = document.createElement("main");
   main.className = "app-shell";
   const boardView = createBoardView(model, handleEdgeClick);
-  const bar = document.createElement("div");
-  bar.className = "status-bar";
-  main.append(bar, boardView.element);
+  const hud = document.createElement("header");
+  hud.className = "hud";
+  hud.innerHTML = `
+    <a class="menu-link" data-role="menu">&larr; Menu</a>
+    <div class="scoreboard">
+      <div class="score-card blue" data-side="1">
+        <span class="player-name"></span><span class="score">0</span>
+      </div>
+      <div class="score-card red" data-side="2">
+        <span class="score">0</span><span class="player-name"></span>
+      </div>
+    </div>
+    <p class="status" role="status"></p>
+    <div class="invite" hidden>
+      <input type="text" readonly aria-label="Invite link">
+      <button type="button" data-role="copy">Copy link</button>
+      <button type="button" data-role="share" hidden>Share</button>
+    </div>
+  `;
+  hud.querySelector('[data-role="menu"]').href = window.location.pathname;
+  const hudCards = [...hud.querySelectorAll(".score-card")];
+  const hudStatus = hud.querySelector(".status");
+  const hudInvite = hud.querySelector(".invite");
+  const inviteInput = hudInvite.querySelector("input");
+  main.append(hud, boardView.element);
   root.replaceChildren(main);
 
   let worker = null;
@@ -186,51 +231,82 @@ export function createApp(root) {
     return `${window.location.origin}${window.location.pathname}?room=${session.roomId}`;
   }
 
-  function renderBar() {
-    bar.replaceChildren();
-    const text = document.createElement("span");
-    bar.append(text);
-    if (!online) {
-      const link = document.createElement("a");
-      link.href = "?online=host";
-      link.textContent = "Play online with a friend";
-      bar.append(link);
-      text.remove();
-      return;
+  const bothHuman = player1Type === PlayerType.Human && player2Type === PlayerType.Human;
+  const bothRobot = player1Type === PlayerType.Robot && player2Type === PlayerType.Robot;
+
+  function playerLabel(isPlayer1) {
+    if (online) {
+      return isPlayer1 === localIsPlayer1 ? "You" : "Friend";
     }
-    const me = localIsPlayer1 ? "Blue" : "Red";
-    if (netState === "waiting") {
-      text.textContent = "Send this link to your friend:";
-      const input = document.createElement("input");
-      input.readOnly = true;
-      input.value = inviteUrl();
-      input.addEventListener("focus", () => input.select());
-      const copy = document.createElement("button");
-      copy.type = "button";
-      copy.textContent = "Copy";
-      copy.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(input.value);
-          copy.textContent = "Copied";
-        } catch {
-          input.select();
-        }
-      });
-      bar.append(input, copy);
-    } else if (netState === "connecting") {
-      text.textContent = "Connecting to your friend...";
-    } else if (netState === "connected") {
-      if (!board.gaming()) {
-        text.textContent = `Game over. You are ${me}.`;
-      } else {
-        text.textContent = isLocalTurn()
-          ? `You are ${me}. Your turn!`
-          : `You are ${me}. Waiting for your friend...`;
+    const type = isPlayer1 ? player1Type : player2Type;
+    if (type === PlayerType.Robot) {
+      return bothRobot ? (isPlayer1 ? "Robot 1" : "Robot 2") : "Robot";
+    }
+    return bothHuman ? (isPlayer1 ? "Player 1" : "Player 2") : "You";
+  }
+
+  function statusText() {
+    if (online) {
+      if (netState === "waiting") {
+        return "Waiting for your friend to join...";
       }
-    } else if (netState === "disconnected") {
-      text.textContent = "Your friend left the game.";
-    } else {
-      text.textContent = netDetail || "Connection problem.";
+      if (netState === "connecting") {
+        return "Connecting to your friend...";
+      }
+      if (netState === "disconnected") {
+        return "Your friend left the game.";
+      }
+      if (netState === "error") {
+        return netDetail || "Connection problem.";
+      }
+      if (!board.gaming()) {
+        return "Game over";
+      }
+      return isLocalTurn() ? "Your turn" : "Friend's turn...";
+    }
+    if (!board.gaming()) {
+      return "Game over";
+    }
+    if (isRobotTurn()) {
+      return bothRobot ? "Robots are playing..." : "Robot is thinking...";
+    }
+    return bothHuman ? `${board.isPlayer1Turn() ? "Blue" : "Red"}'s turn` : "Your turn";
+  }
+
+  function renderHud() {
+    const live = board.gaming() && (!online || netState === "connected");
+    hudCards.forEach((card, index) => {
+      const isPlayer1 = index === 0;
+      card.querySelector(".player-name").textContent = playerLabel(isPlayer1);
+      card.querySelector(".score").textContent = String(
+        isPlayer1 ? board.player1Score() : board.player2Score(),
+      );
+      card.classList.toggle("active", live && board.isPlayer1Turn() === isPlayer1);
+    });
+    hudStatus.textContent = statusText();
+    hudStatus.dataset.state = online ? netState : "offline";
+    hudInvite.hidden = netState !== "waiting";
+  }
+
+  if (session) {
+    inviteInput.value = online.role === "host" ? inviteUrl() : "";
+    inviteInput.addEventListener("focus", () => inviteInput.select());
+    const copyButton = hudInvite.querySelector('[data-role="copy"]');
+    const shareButton = hudInvite.querySelector('[data-role="share"]');
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(inviteInput.value);
+        copyButton.textContent = "Copied!";
+        setTimeout(() => { copyButton.textContent = "Copy link"; }, 1800);
+      } catch {
+        inviteInput.select();
+      }
+    });
+    if (navigator.share) {
+      shareButton.hidden = false;
+      shareButton.addEventListener("click", () => {
+        navigator.share({ title: "Dots & Boxes", url: inviteInput.value }).catch(() => {});
+      });
     }
   }
 
@@ -242,7 +318,7 @@ export function createApp(root) {
     if (closed) {
       return;
     }
-    renderBar();
+    renderHud();
     const robotTurn = isRobotTurn();
     const onlineReady = !online || (netState === "connected" && isLocalTurn());
     if (!thinking && board.gaming() && robotTurn && worker) {
@@ -259,7 +335,17 @@ export function createApp(root) {
       unitSize,
     );
     if (!board.gaming() && !resultDialog) {
-      resultDialog = createResultDialog(board, restart, close);
+      const score = `${board.player1Score()} : ${board.player2Score()}`;
+      let title = "It's a draw!";
+      if (board.relativeScore !== 0) {
+        const player1Won = board.relativeScore > 0;
+        if (online) {
+          title = player1Won === localIsPlayer1 ? "You won!" : "Your friend won";
+        } else {
+          title = `${player1Won ? "Blue" : "Red"} wins!`;
+        }
+      }
+      resultDialog = createResultDialog(title, `Final score ${score}`, () => restart());
       main.append(resultDialog);
     }
   }
@@ -331,14 +417,6 @@ export function createApp(root) {
     worker = null;
     session?.destroy();
     window.removeEventListener("keydown", handleKeyDown);
-  }
-
-  function close() {
-    destroy();
-    main.className = "closed-window";
-    main.setAttribute("aria-label", "Dots and Boxes closed");
-    main.replaceChildren();
-    window.close();
   }
 
   function handleKeyDown(event) {
