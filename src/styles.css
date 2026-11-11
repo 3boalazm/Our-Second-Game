@@ -120,6 +120,22 @@ input {
   cursor: pointer;
 }
 
+.check-link {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.check-link[hidden] {
+  display: none;
+}
+
+.menu-footer-link {
+  align-self: center;
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
 .sync[hidden] {
   display: none;
 }

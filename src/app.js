@@ -175,8 +175,10 @@ function createMenu(root) {
       <a class="menu-button subtle" data-query="?player1=robot&player2=robot">
         <strong>Watch two robots play</strong>
       </a>
+      <a class="menu-footer-link" data-page="check.html">Connection check</a>
     </section>
   `;
+  main.querySelector("[data-page]").href = `${base}check.html`;
   const links = [...main.querySelectorAll("[data-query]")];
   const buttons = [...main.querySelectorAll("[data-size]")];
   function select(size) {
@@ -223,6 +225,7 @@ export function createApp(root) {
     <div class="hud-top">
       <a class="menu-link" data-role="menu">&larr; Menu</a>
       <span class="room-info"></span>
+      <a class="check-link" data-role="check" hidden>Check</a>
       <button type="button" class="sync" data-role="sync" hidden>Sync</button>
     </div>
     <div class="scoreboard">
@@ -245,6 +248,7 @@ export function createApp(root) {
   const hudStatus = hud.querySelector(".status");
   const roomInfo = hud.querySelector(".room-info");
   const syncButton = hud.querySelector('[data-role="sync"]');
+  const checkLink = hud.querySelector('[data-role="check"]');
   const hudInvite = hud.querySelector(".invite");
   const inviteInput = hudInvite.querySelector("input");
   main.append(hud, boardView.element);
@@ -488,6 +492,8 @@ export function createApp(root) {
 
   if (session) {
     syncButton.hidden = false;
+    checkLink.hidden = false;
+    checkLink.href = `${window.location.pathname}check.html`;
     syncButton.addEventListener("click", () => {
       session.reconnect();
       syncButton.textContent = "Syncing...";
