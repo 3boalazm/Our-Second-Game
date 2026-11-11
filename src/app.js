@@ -1,7 +1,8 @@
-import { BoardSize, readPlayerConfig } from "./config";
+import { BoardSize, readOnlineConfig, readPlayerConfig } from "./config";
 import { Board, Owner } from "./game/board";
 import { BoardTopology } from "./game/board-topology";
 import { PlayerType } from "./game/robots";
+import { createOnlineSession } from "./online";
 
 const DefaultUnitSize = 8;
 
@@ -132,11 +133,16 @@ function createResultDialog(board, onRestart, onClose) {
 export function createApp(root) {
   const model = new BoardTopology(BoardSize);
   const board = new Board(model);
-  const { player1Type, player2Type } = readPlayerConfig();
+  const online = readOnlineConfig();
+  const { player1Type, player2Type } = online
+    ? { player1Type: PlayerType.Human, player2Type: PlayerType.Human }
+    : readPlayerConfig();
   const main = document.createElement("main");
   main.className = "app-shell";
   const boardView = createBoardView(model, handleEdgeClick);
-  main.append(boardView.element);
+  const bar = document.createElement("div");
+  bar.className = "status-bar";
+  main.append(bar, boardView.element);
   root.replaceChildren(main);
 
   let worker = null;
@@ -146,6 +152,88 @@ export function createApp(root) {
   let unitSize = DefaultUnitSize;
   let resultDialog = null;
 
+  // Online play: host is Blue (player 1), guest is Red (player 2).
+  const localIsPlayer1 = online?.role === "host";
+  let netState = online ? "connecting" : "offline";
+  let netDetail = "";
+  const session = online
+    ? createOnlineSession({
+        role: online.role,
+        room: online.room,
+        onStatus(state, detail) {
+          netState = state;
+          netDetail = detail;
+          render();
+        },
+        onMessage(message) {
+          if (message.type === "move") {
+            // Only accept a move when it is the opponent's turn.
+            if (board.isPlayer1Turn() !== localIsPlayer1) {
+              applyMove(message.edge);
+            }
+          } else if (message.type === "restart") {
+            restart(false);
+          }
+        },
+      })
+    : null;
+
+  function isLocalTurn() {
+    return board.isPlayer1Turn() === localIsPlayer1;
+  }
+
+  function inviteUrl() {
+    return `${window.location.origin}${window.location.pathname}?room=${session.roomId}`;
+  }
+
+  function renderBar() {
+    bar.replaceChildren();
+    const text = document.createElement("span");
+    bar.append(text);
+    if (!online) {
+      const link = document.createElement("a");
+      link.href = "?online=host";
+      link.textContent = "Play online with a friend";
+      bar.append(link);
+      text.remove();
+      return;
+    }
+    const me = localIsPlayer1 ? "Blue" : "Red";
+    if (netState === "waiting") {
+      text.textContent = "Send this link to your friend:";
+      const input = document.createElement("input");
+      input.readOnly = true;
+      input.value = inviteUrl();
+      input.addEventListener("focus", () => input.select());
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(input.value);
+          copy.textContent = "Copied";
+        } catch {
+          input.select();
+        }
+      });
+      bar.append(input, copy);
+    } else if (netState === "connecting") {
+      text.textContent = "Connecting to your friend...";
+    } else if (netState === "connected") {
+      if (!board.gaming()) {
+        text.textContent = `Game over. You are ${me}.`;
+      } else {
+        text.textContent = isLocalTurn()
+          ? `You are ${me}. Your turn!`
+          : `You are ${me}. Waiting for your friend...`;
+      }
+    } else if (netState === "disconnected") {
+      text.textContent = "Your friend left the game.";
+    } else {
+      text.textContent = netDetail || "Connection problem.";
+    }
+  }
+
   function isRobotTurn() {
     return (board.isPlayer1Turn() ? player1Type : player2Type) === PlayerType.Robot;
   }
@@ -154,7 +242,9 @@ export function createApp(root) {
     if (closed) {
       return;
     }
+    renderBar();
     const robotTurn = isRobotTurn();
+    const onlineReady = !online || (netState === "connected" && isLocalTurn());
     if (!thinking && board.gaming() && robotTurn && worker) {
       thinking = true;
       worker.postMessage({
@@ -164,7 +254,7 @@ export function createApp(root) {
     }
     boardView.render(
       board,
-      !thinking && board.gaming() && !robotTurn,
+      !thinking && board.gaming() && !robotTurn && onlineReady,
       thinking,
       unitSize,
     );
@@ -187,12 +277,22 @@ export function createApp(root) {
   }
 
   function handleEdgeClick(edge) {
-    if (!thinking && !isRobotTurn()) {
-      applyMove(edge);
+    if (thinking || isRobotTurn()) {
+      return;
     }
+    if (online) {
+      if (netState !== "connected" || !isLocalTurn() || !board.gaming() || board.contains(edge)) {
+        return;
+      }
+      session.send({ type: "move", edge });
+    }
+    applyMove(edge);
   }
 
   function startWorker() {
+    if (online) {
+      return;
+    }
     const nextWorker = new Worker(
       new URL("./game/robot-worker.js", import.meta.url),
       { type: "module" },
@@ -207,9 +307,12 @@ export function createApp(root) {
     };
   }
 
-  function restart() {
+  function restart(notifyPeer = true) {
     if (closed) {
       return;
+    }
+    if (online && notifyPeer) {
+      session.send({ type: "restart" });
     }
     pendingRequest += 1;
     worker?.terminate();
@@ -226,6 +329,7 @@ export function createApp(root) {
     pendingRequest += 1;
     worker?.terminate();
     worker = null;
+    session?.destroy();
     window.removeEventListener("keydown", handleKeyDown);
   }
 
